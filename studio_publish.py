@@ -3,9 +3,9 @@
 One job per run, read as JSON from stdin; one JSON result printed as the last stdout line.
 Runs the upstream uploaders in per-account Chrome profiles (``SAU_PROFILE_ROOT`` is required).
 
-    {"action": "publish", "platform": "douyin|tiktok|youtube|instagram", "account": "pets",
+    {"action": "publish", "platform": "douyin|tiktok|youtube|instagram|facebook", "account": "pets",
      "video": "/abs/clip.mp4", "title": "...", "description": "...", "tags": ["a"],
-     "visibility": "private", "ai": true, "timeout_s": 1800}
+     "visibility": "private", "ai": true, "timeout_s": 1800, "page": "Facebook Page name"}
     {"action": "login", "platform": "youtube", "account": "pets"}
 
 Result: {"ok": bool, "code": "PUBLISHED|PUBLISH_UNCONFIRMED|LOGIN_REQUIRED|VERIFY_REQUIRED|
@@ -21,15 +21,16 @@ import re
 import sys
 from pathlib import Path
 
-PLATFORMS = ("douyin", "tiktok", "youtube", "instagram")
+PLATFORMS = ("douyin", "tiktok", "youtube", "instagram", "facebook")
 LOGIN_URLS = {
     "douyin": "https://creator.douyin.com/",
     "tiktok": "https://www.tiktok.com/tiktokstudio/upload?lang=en",
     "youtube": "https://studio.youtube.com/",
     "instagram": "https://www.instagram.com/",
+    "facebook": "https://business.facebook.com/latest/composer/",
 }
 LOGIN_HINT = re.compile(r"登录态失效|cookie|login|Log in|未登录|sign ?in", re.I)
-UNCONFIRMED_HINT = re.compile(r"未确认|不要重发|submission_unknown|已提交")
+UNCONFIRMED_HINT = re.compile(r"未确认|不要重发|勿重复|待查询|submission_unknown|已提交")
 
 
 def account_file(platform: str, account: str) -> Path:
@@ -77,6 +78,18 @@ async def publish(job: dict) -> dict:
                                 tags=tags, video_file=video, ai_label=ai, result_file=result_file)
         result = await app.upload()
         return {"url": result.get("post_url")}
+    if platform == "facebook":
+        # A Facebook Page Reel through Meta Business Suite (Pages have no private posts).
+        from uploader.meta_uploader.facebook_page_uploader.main import MetaBusinessUploader
+
+        result_file = Path(os.environ["SAU_PROFILE_ROOT"]) / "results" / f"facebook-{os.getpid()}.json"
+        app = MetaBusinessUploader("facebook-page", str(file), title=job["title"],
+                                   description=job.get("description", ""), tags=tags, video_file=video,
+                                   page_name=job.get("page") or None, result_file=result_file)
+        result = await app.upload()
+        page_id, content_id = result.get("page_id"), result.get("content_id")
+        return {"url": f"https://business.facebook.com/latest/posts/published_posts?asset_id={page_id}"
+                if page_id else None, "content_id": content_id}
     raise ValueError(f"unsupported platform: {platform}")
 
 

@@ -28,7 +28,7 @@ class StudioPublishTests(unittest.TestCase):
                 "description": "D", "tags": ["#dog", "bulldog"], "visibility": "private", "ai": True, **extra}
 
     def test_bad_requests_never_reach_a_browser(self):
-        for job in ({}, self.job(platform="facebook"), self.job(video="/nope.mp4"), self.job(visibility="friends")):
+        for job in ({}, self.job(platform="weibo"), self.job(video="/nope.mp4"), self.job(visibility="friends")):
             result = asyncio.run(sp.run(job))
             self.assertEqual(result["code"], "BAD_REQUEST")
 
