@@ -19,6 +19,10 @@ def get_cli_action() -> List[str]:
 
 
 async def set_init_script(context):
+    # Fork: persistent Chrome profiles run without injected scripts (patchright best practice).
+    from utils.profile_browser import enabled as _profiles_enabled
+    if _profiles_enabled():
+        return context
     stealth_js_path = Path(BASE_DIR / "utils/stealth.min.js")
     await context.add_init_script(path=stealth_js_path)
     return context

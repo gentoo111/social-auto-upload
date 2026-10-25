@@ -11,7 +11,8 @@ import os
 import re
 from pathlib import Path
 
-from patchright.async_api import Page, Playwright, async_playwright, expect
+from patchright.async_api import Page, Playwright, expect
+from utils.profile_browser import async_playwright  # fork: per-account Chrome profiles
 
 from utils.log import facebook_logger
 

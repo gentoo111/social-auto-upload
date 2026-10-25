@@ -9,7 +9,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from patchright.async_api import Locator, Page, Playwright, TimeoutError as BrowserTimeoutError, async_playwright, expect
+from patchright.async_api import Locator, Page, Playwright, TimeoutError as BrowserTimeoutError, expect
+from utils.profile_browser import async_playwright  # fork: per-account Chrome profiles
 
 INSTAGRAM_HOME_URL = "https://www.instagram.com/"
 # 未配置环境变量或 --proxy 时使用系统直连。

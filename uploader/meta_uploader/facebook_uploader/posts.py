@@ -7,7 +7,8 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from patchright.async_api import Page, async_playwright, expect
+from patchright.async_api import Page, expect
+from utils.profile_browser import async_playwright  # fork: per-account Chrome profiles
 
 from uploader.meta_uploader.facebook_uploader.main import _open_facebook_page
 

@@ -7,7 +7,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from patchright.async_api import Page, async_playwright, expect
+from patchright.async_api import Page, expect
+from utils.profile_browser import async_playwright  # fork: per-account Chrome profiles
 
 from .main import _open_instagram_page, instagram_identity, instagram_response_payload
 

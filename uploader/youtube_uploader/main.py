@@ -14,7 +14,8 @@ the storage_state is saved. Reuse it afterwards for fully unattended uploads.
 import asyncio
 from pathlib import Path
 
-from patchright.async_api import Page, Playwright, async_playwright
+from patchright.async_api import Page, Playwright
+from utils.profile_browser import async_playwright  # fork: per-account Chrome profiles
 
 from conf import DEBUG_MODE
 from uploader.base_video import BaseVideoUploader

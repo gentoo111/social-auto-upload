@@ -7,7 +7,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-from patchright.async_api import async_playwright, expect, TimeoutError as BrowserTimeoutError
+from patchright.async_api import expect, TimeoutError as BrowserTimeoutError
+from utils.profile_browser import async_playwright  # fork: per-account Chrome profiles
 
 from uploader.meta_uploader.facebook_page_uploader.main import _open_business_page
 
