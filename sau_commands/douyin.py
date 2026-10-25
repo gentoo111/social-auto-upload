@@ -51,6 +51,9 @@ def register(platform_parsers):
         "--declaration",
         help="Exact Douyin self-declaration option text; omitted means do not set one",
     )
+    upload_video_parser.add_argument(
+        "--visibility", default="public", choices=["public", "private"],
+        help="public, or private (仅自己可见; switch to public later in the Douyin app)")
     upload_video_parser.add_argument("--collection", default=None, help="Optional collection name to add the work into (must already exist)")
     add_runtime_flags(upload_video_parser)
 
@@ -84,6 +87,7 @@ class DouyinVideoUploadRequest:
     headless: bool = True
     declaration: str | None = None
     collection_name: str | None = None
+    visibility: str = "public"
 
 
 @dataclass(slots=True)
@@ -136,6 +140,7 @@ async def upload_video(request: DouyinVideoUploadRequest) -> Path:
         productLink=request.product_link,
         productTitle=request.product_title,
         declaration=request.declaration,
+        visibility=request.visibility,
         publish_strategy=request.publish_strategy,
         debug=request.debug,
         headless=request.headless,
@@ -203,6 +208,7 @@ async def run(args):
             debug=args.debug,
             headless=args.headless,
             collection_name=args.collection,
+            visibility=getattr(args, "visibility", "public"),
         )
         await upload_video(request)
         print(f"Douyin video upload submitted: {request.video_file}")

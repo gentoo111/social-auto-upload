@@ -2,7 +2,8 @@
 import re
 from datetime import datetime
 
-from playwright.async_api import Playwright, async_playwright
+from patchright.async_api import Playwright
+from utils.profile_browser import async_playwright  # fork: per-account Chrome profiles
 import os
 import asyncio
 
@@ -70,8 +71,18 @@ async def get_tiktok_cookie(account_file):
         await context.storage_state(path=account_file)
 
 
+# Fork: the Post button and the "Show more" switches as TikTok Studio renders them in 2026-10
+# (taken from Publisher Studio's working adapter).
+TK_POST = 'button[data-e2e="post_video_button"], div.btn-post > button, div.button-group > button:has-text("Post")'
+TK_AIGC = '[data-e2e="aigc_container"]'
+TK_ONLY_YOU = ("Only you", "Only me", "仅自己")
+UPLOAD_TIMEOUT_S = 900
+PUBLISH_TIMEOUT_S = 180
+
+
 class TiktokVideo(object):
-    def __init__(self, title, file_path, tags, publish_date, account_file, thumbnail_path=None):
+    def __init__(self, title, file_path, tags, publish_date, account_file, thumbnail_path=None,
+                 visibility="public", ai_generated=False):
         self.title = title
         self.file_path = file_path
         self.tags = tags
@@ -81,6 +92,68 @@ class TiktokVideo(object):
         self.local_executable_path = LOCAL_CHROME_PATH
         self.headless = LOCAL_CHROME_HEADLESS
         self.locator_base = None
+        # Fork: "private" = Who can watch → Only you; ai_generated turns on the AI-generated
+        # content switch. Either one that cannot be confirmed stops before Post.
+        if visibility not in ("public", "private"):
+            raise ValueError(f"unsupported TikTok visibility: {visibility}")
+        self.visibility = visibility
+        self.ai_generated = ai_generated
+        self.video_id = None
+
+    async def declare_ai(self, page):
+        aigc = self.locator_base.locator(TK_AIGC)
+        switch = aigc.locator('div.Switch__content')
+
+        async def on() -> bool:
+            return await switch.count() > 0 and await switch.first.get_attribute('aria-checked') == 'true'
+
+        if not (await aigc.count() and await aigc.first.is_visible()):
+            more = self.locator_base.locator('div.more-btn')
+            if await more.count():
+                await more.first.click()
+                await page.wait_for_timeout(800)
+        if not await aigc.count():
+            raise RuntimeError("未找到 TikTok「AI-generated content」开关，未发布")
+        if not await on():
+            await aigc.locator('div.Switch__root').first.click()
+            await page.wait_for_timeout(600)
+            confirm = self.locator_base.locator('div.TUXModal').get_by_text(re.compile(r'^(Turn on|开启)$'))
+            if await confirm.count():
+                await confirm.first.click()
+        for _ in range(16):
+            if await on():
+                tiktok_logger.info("  [-] AI-generated content switched on")
+                return
+            await page.wait_for_timeout(500)
+        raise RuntimeError("TikTok AI 声明开关未打开，未发布")
+
+    async def make_private(self, page):
+        if self.visibility != "private":
+            return
+
+        async def chosen() -> bool:
+            return await self.locator_base.locator('button, [role=button], div, span').filter(
+                has_text=re.compile(r'^(' + '|'.join(TK_ONLY_YOU) + r')$')).evaluate_all(
+                "els => els.some(e => e.getClientRects().length > 0 && !e.closest('[role=listbox],[role=option]'))")
+
+        if await chosen():
+            return
+        current = self.locator_base.get_by_text(re.compile(r'^(Everyone|Public|所有人)$'))
+        if not await current.count():
+            raise RuntimeError("未找到 TikTok「Who can watch」选项，未发布")
+        await current.first.click()
+        await page.wait_for_timeout(600)
+        option = self.locator_base.locator('[role=listbox], [role=option], ul').get_by_text(
+            re.compile(r'^(' + '|'.join(TK_ONLY_YOU) + r')$'))
+        if not await option.count():
+            raise RuntimeError("未找到 TikTok「Only you」，未发布")
+        await option.first.click()
+        for _ in range(16):
+            if await chosen():
+                tiktok_logger.info("  [-] Who can watch = Only you")
+                return
+            await page.wait_for_timeout(500)
+        raise RuntimeError("TikTok 未显示已选「Only you」，未发布")
 
     async def set_schedule_time(self, page, publish_date):
         schedule_input_element = self.locator_base.get_by_label('Schedule')
@@ -186,8 +259,16 @@ class TiktokVideo(object):
         if self.publish_date != 0:
             await self.set_schedule_time(page, self.publish_date)
 
+        if self.ai_generated:
+            await self.declare_ai(page)
+        await self.make_private(page)
+
         await self.click_publish(page)
-        tiktok_logger.success(f"video_id: {await self.get_last_video_id(page)}")
+        try:
+            self.video_id = await self.get_last_video_id(page)
+        except Exception:
+            self.video_id = None
+        tiktok_logger.success(f"video_id: {self.video_id}")
 
         await context.storage_state(path=f"{self.account_file}")  # save cookie
         tiktok_logger.info('  [-] update cookie！')
@@ -254,20 +335,28 @@ class TiktokVideo(object):
         await page.locator('#creator-tools-selection-menu-header >> text=English (US)').click()
 
     async def click_publish(self, page):
-        success_flag_div = 'div.common-modal-confirm-modal'
-        while True:
-            try:
-                publish_button = self.locator_base.locator('div.button-group button').nth(0)
-                if await publish_button.count():
-                    await publish_button.click()
-
-                await page.wait_for_url("https://www.tiktok.com/tiktokstudio/content",  timeout=3000)
+        # Fork: onboarding tips can cover Post; content checks may ask to confirm; give up after
+        # PUBLISH_TIMEOUT_S instead of retrying forever (the result is then uncertain, not failed).
+        for tip in ('Got it', '知道了'):
+            hint = self.locator_base.get_by_text(tip, exact=True)
+            if await hint.count():
+                await hint.first.click()
+        await page.keyboard.press('Escape')
+        await page.wait_for_timeout(800)
+        post = self.locator_base.locator(TK_POST)
+        if not await post.count():
+            raise RuntimeError("未找到 TikTok Post 按钮，未发布")
+        await post.first.click()
+        deadline = asyncio.get_running_loop().time() + PUBLISH_TIMEOUT_S
+        while asyncio.get_running_loop().time() < deadline:
+            confirm = self.locator_base.get_by_text(re.compile(r'^(Post now|Post anyway|立即发布)$'))
+            if await confirm.count():
+                await confirm.first.click()
+            if '/tiktokstudio/content' in page.url or '/tiktokstudio/manage' in page.url:
                 tiktok_logger.success("  [-] video published success")
-                break
-            except Exception as e:
-                tiktok_logger.exception(f"  [-] Exception: {e}")
-                tiktok_logger.info("  [-] video publishing")
-                await asyncio.sleep(0.5)
+                return
+            await asyncio.sleep(1)
+        raise TimeoutError("已点击 Post，但未确认 TikTok 发布结果；请在 TikTok Studio 核对，不要重发")
 
     async def get_last_video_id(self, page):
         await page.wait_for_selector('div[data-tt="components_PostTable_Container"]')
@@ -279,11 +368,15 @@ class TiktokVideo(object):
 
 
     async def detect_upload_status(self, page):
+        deadline = asyncio.get_running_loop().time() + UPLOAD_TIMEOUT_S
         while True:
+            if asyncio.get_running_loop().time() > deadline:
+                raise TimeoutError("TikTok 视频上传超时，未发布")
             try:
                 # if await self.locator_base.locator('div.btn-post > button').get_attribute("disabled") is None:
-                if await self.locator_base.locator(
-                        'div.button-group > button >> text=Post').get_attribute("disabled") is None:
+                post = self.locator_base.locator(TK_POST).first
+                if await post.get_attribute("disabled") is None and await post.get_attribute("aria-disabled") != "true" \
+                        and await post.get_attribute("data-disabled") != "true":
                     tiktok_logger.info("  [-]video uploaded.")
                     break
                 else:

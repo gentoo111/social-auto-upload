@@ -330,6 +330,9 @@ async def douyin_cookie_gen(
         return result
 
 
+DOUYIN_PUBLISH_TIMEOUT_S = 300
+
+
 class DouYinBaseUploader(BaseVideoUploader):
     def __init__(
         self,
@@ -643,6 +646,7 @@ class DouYinVideo(DouYinBaseUploader):
         debug: bool = DEBUG_MODE,
         headless: bool = LOCAL_CHROME_HEADLESS,
         declaration: str | None = None,
+        visibility: str = "public",
     ):
         super().__init__(
             publish_date=publish_date,
@@ -661,6 +665,34 @@ class DouYinVideo(DouYinBaseUploader):
         self.desc = desc or ""
         self.collection_name = collection_name
         self.declaration = declaration.strip() if declaration and declaration.strip() else None
+        if visibility not in ("public", "private"):
+            raise ValueError(f"unsupported Douyin visibility: {visibility}")
+        self.visibility = visibility
+
+    async def apply_visibility(self, page: Page) -> None:
+        """Fork: 「谁可以看」选「仅自己可见」，确认已选中，否则拒绝发布（公开为默认，不动）。"""
+        if self.visibility != "private":
+            return
+        option = page.locator("label").filter(has_text="仅自己可见").first
+
+        async def chosen() -> bool:
+            if not await option.count():
+                return False
+            return await option.evaluate(
+                "l => /checked/.test(l.className || '') || !!l.querySelector('input:checked')")
+
+        if await chosen():
+            return
+        if not await option.count():
+            raise RuntimeError("未找到抖音「仅自己可见」，拒绝继续发布")
+        await option.scroll_into_view_if_needed()
+        await option.click()
+        for _ in range(16):
+            if await chosen():
+                douyin_logger.info(_msg("🔒", "已选「仅自己可见」"))
+                return
+            await asyncio.sleep(0.5)
+        raise RuntimeError("抖音未显示已选「仅自己可见」，拒绝继续发布")
 
     async def apply_self_declaration(self, page: Page) -> None:
         if not self.declaration:
@@ -1051,6 +1083,7 @@ class DouYinVideo(DouYinBaseUploader):
         if not self.declaration:
             self.declaration = "内容由AI生成"
         await self.apply_self_declaration(page)
+        await self.apply_visibility(page)
 
         # 先归集：此时尚未打开封面弹窗，避免 dy-creator-content-portal 封面浮层拦截合集下拉
         # （实测：封面弹窗在 headless 下常滞留"检测中"未关闭，会盖住"添加合集"下拉）
@@ -1068,7 +1101,12 @@ class DouYinVideo(DouYinBaseUploader):
             await self.set_schedule_time_douyin(page, self.publish_date)
 
         sms_prompt_logged = False
+        # Fork: stop after PUBLISH_TIMEOUT_S instead of retrying forever; the result is then
+        # uncertain (the button may have been pressed), so the caller must check, not repost.
+        publish_deadline = asyncio.get_running_loop().time() + DOUYIN_PUBLISH_TIMEOUT_S
         while True:
+            if asyncio.get_running_loop().time() > publish_deadline:
+                raise TimeoutError("抖音发布未确认（超时）；请在作品管理核对，不要重发")
             try:
                 # 移除会拦截发布按钮点击的新手引导/话题下拉浮层
                 await page.evaluate(

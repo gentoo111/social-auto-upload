@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -157,8 +158,12 @@ class InstagramUploader:
     def __init__(self, account_file: str | Path, *, title: str, description: str = '', tags: list[str] | None = None,
                  video_file: str | Path | None = None, image_files: list[str | Path] | None = None,
                  thumbnail: str | Path | None = None,
-                 proxy: str | None = None, headless: bool = False, result_file: str | Path | None = None):
+                 proxy: str | None = None, headless: bool = False, result_file: str | Path | None = None,
+                 ai_label: bool = False):
         self.account_file = Path(account_file)
+        # Fork: turn on "Add AI label" (Advanced settings on the caption step) before sharing.
+        # Selectors UNVERIFIED on a live account; a label that cannot be confirmed stops the share.
+        self.ai_label = ai_label
         self.title, self.description = title.strip(), description.strip()
         self.tags = [t.strip().lstrip('#') for t in (tags or []) if t.strip().lstrip('#')]
         self.video_file = Path(video_file) if video_file else None
@@ -257,6 +262,29 @@ class InstagramUploader:
         # data-lexical-editor 标识真实正文编辑器，限定当前创建弹窗，排除评论输入框。
         await expect(dialog.locator('[contenteditable="true"][role="textbox"][data-lexical-editor="true"]')).to_have_count(1)
 
+    async def _set_ai_label(self, dialog: Locator) -> None:
+        label = re.compile(r'AI label|AI 标签|AI标签', re.I)
+        row = dialog.locator('div').filter(has_text=label).filter(has=dialog.locator('input[type="checkbox"], [role="switch"]'))
+        if not await row.count():
+            advanced = dialog.get_by_text(re.compile(r'^(Advanced settings|高级设置)$'))
+            if await advanced.count():
+                await advanced.first.click()
+                await dialog.page.wait_for_timeout(800)
+        if not await row.count():
+            raise RuntimeError('未找到 Instagram「Add AI label」开关，未分享')
+        switch = row.last.locator('input[type="checkbox"], [role="switch"]').first
+
+        async def on() -> bool:
+            return await switch.evaluate("e => e.checked === true || e.getAttribute('aria-checked') === 'true'")
+
+        if not await on():
+            await switch.click(force=True)
+        for _ in range(16):
+            if await on():
+                return
+            await dialog.page.wait_for_timeout(500)
+        raise RuntimeError('Instagram AI 标签未打开，未分享')
+
     async def _publish(self, page: Page, identity: dict) -> None:
         """先登记最终响应监听再分享，响应不明时记录 unknown 且不重发。"""
         # 配文页独有 Lexical 编辑器；标题栏唯一主动作此时是分享，不使用翻译后的按钮名称。
@@ -265,6 +293,8 @@ class InstagramUploader:
         caption = self._caption()
         await editor.fill(caption)
         await expect(editor).to_have_text(caption)
+        if self.ai_label:
+            await self._set_ai_label(dialog)
         action = dialog.locator(INSTAGRAM_PRIMARY_ACTION)
         await expect(action).to_have_count(1)
         await expect(action).to_be_enabled()

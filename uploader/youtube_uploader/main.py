@@ -12,6 +12,7 @@ Login is interactive (Google account, no QR code): the browser opens, the user s
 the storage_state is saved. Reuse it afterwards for fully unattended uploads.
 """
 import asyncio
+import re
 from pathlib import Path
 
 from patchright.async_api import Page, Playwright
@@ -183,10 +184,26 @@ async def _wait_upload_complete(page: Page, max_polls: int = 360) -> bool:
     return False
 
 
+class VerificationRequired(RuntimeError):
+    """Google asked to confirm the account (Verify it's you); stop and leave it to the owner."""
+
+
+async def _assert_no_verification(page: Page) -> None:
+    prompt = page.get_by_text(re.compile(r"Verify it.s you|验证您的身份|确认是您本人"))
+    if await prompt.count() and await prompt.first.is_visible():
+        raise VerificationRequired("YouTube 要求身份验证（Verify it's you），未发布；请主人在该账号的 Chrome 里完成验证")
+
+
+async def _radio_checked(radio) -> bool:
+    return await radio.evaluate(
+        "e => e.hasAttribute('checked') || e.getAttribute('aria-checked') === 'true'")
+
+
 class YouTubeVideo(BaseVideoUploader):
     def __init__(self, title, file_path, tags, account_file, *,
                  description="", thumbnail_path=None, playlist=None,
-                 visibility="public", debug=DEBUG_MODE, headless=False):
+                 visibility="public", debug=DEBUG_MODE, headless=False,
+                 altered_content=False):
         self.title = title
         self.file_path = str(file_path)
         self.tags = tags or []
@@ -197,6 +214,26 @@ class YouTubeVideo(BaseVideoUploader):
         self.visibility = visibility if visibility in VISIBILITY else "public"
         self.debug = debug
         self.headless = headless
+        # Fork: answer "Altered content" with Yes (realistic AI-generated footage), and fail
+        # instead of publishing when it cannot be confirmed.
+        self.altered_content = altered_content
+        self.video_url = ""
+
+    async def _declare_altered_content(self, page: Page) -> None:
+        yes = page.locator("tp-yt-paper-radio-button[name='VIDEO_HAS_ALTERED_CONTENT_YES']").first
+        if not (await yes.count() and await yes.is_visible()):
+            await _click_if_present(page, "#toggle-button", 6000)
+            await page.wait_for_timeout(1000)
+        if not await yes.count():
+            raise RuntimeError("未找到 YouTube「Altered content: Yes」，拒绝发布")
+        await yes.scroll_into_view_if_needed()
+        await yes.click()
+        for _ in range(16):
+            if await _radio_checked(yes):
+                youtube_logger.info(_msg("🤖", "已声明 Altered content: Yes"))
+                return
+            await page.wait_for_timeout(500)
+        raise RuntimeError("YouTube Altered content 未选中「Yes」，拒绝发布")
 
     async def upload(self, playwright: Playwright) -> None:
         browser = await playwright.chromium.launch(
@@ -223,6 +260,7 @@ class YouTubeVideo(BaseVideoUploader):
         # 2) 等详情对话框
         await page.locator("#title-textarea").wait_for(state="visible", timeout=120000)
 
+        await _assert_no_verification(page)
         # 3) 标题
         youtube_logger.info(_msg("✍️", "填写标题"))
         await _fill_editable(page, "#title-textarea #textbox", self.title[:100])
@@ -287,6 +325,9 @@ class YouTubeVideo(BaseVideoUploader):
             except Exception as exc:
                 youtube_logger.warning(_msg("⚠️", f"标签填写跳过（不影响发布）: {exc}"))
 
+        if self.altered_content:
+            await self._declare_altered_content(page)
+
         # 9) 连点 Next 到“可见性”步骤
         for _ in range(5):
             vis = page.locator("tp-yt-paper-radio-button[name='PUBLIC']")
@@ -299,16 +340,22 @@ class YouTubeVideo(BaseVideoUploader):
         # 10) 可见性
         youtube_logger.info(_msg("🌐", f"设置可见性 = {self.visibility}"))
         await _click_if_present(page, f"tp-yt-paper-radio-button[name='{VISIBILITY[self.visibility]}']", 10000)
+        radio = page.locator(f"tp-yt-paper-radio-button[name='{VISIBILITY[self.visibility]}']").first
+        if not (await radio.count() and await _radio_checked(radio)):
+            await browser.close()
+            raise RuntimeError(f"YouTube 可见性未选中 {self.visibility}，拒绝发布")
 
         # 10.5) 关键：等上传真正传完再发布。浏览器上传靠窗口开着传，
         #       传到一半就点发布+关浏览器 = 上传被掐断卡在中途（如 76%）。
         youtube_logger.info(_msg("📤", "等待上传完成（传完才发布）…"))
         await _wait_upload_complete(page)
 
+        await _assert_no_verification(page)
         # 11) 发布
         await page.wait_for_timeout(1200)
         if not await _click_if_present(page, "#done-button", 15000):
-            youtube_logger.warning(_msg("🤔", "未找到发布按钮，可能上传未到可发布进度；请在窗口里手动发布"))
+            await browser.close()
+            raise RuntimeError("未找到 YouTube 发布按钮（上传可能未完成），未发布")
         else:
             await page.wait_for_timeout(4000)
             video_url = ""
@@ -318,6 +365,7 @@ class YouTubeVideo(BaseVideoUploader):
                     video_url = await link.get_attribute("href") or ""
             except Exception:
                 pass
+            self.video_url = video_url
             await _click_if_present(page, "ytcp-button:has-text('Close'), ytcp-button:has-text('关闭'), #close-button", 8000)
             youtube_logger.success(_msg("🥳", f"发布完成（{self.visibility}）{(' ' + video_url) if video_url else ''}"))
 
