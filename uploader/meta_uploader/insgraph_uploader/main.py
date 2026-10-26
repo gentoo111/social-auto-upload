@@ -268,16 +268,18 @@ class InstagramUploader:
         await expect(dialog.locator('[contenteditable="true"][role="textbox"][data-lexical-editor="true"]')).to_have_count(1)
 
     async def _set_ai_label(self, dialog: Locator) -> None:
-        label = re.compile(r'AI label|AI 标签|AI标签', re.I)
-        row = dialog.locator('div').filter(has_text=label).filter(has=dialog.locator('input[type="checkbox"], [role="switch"]'))
-        if not await row.count():
-            advanced = dialog.get_by_text(re.compile(r'^(Advanced settings|高级设置)$'))
+        # Caption step, live 2026-10-26: <span>Add AI label</span> beside
+        # <input role="switch" type="checkbox" aria-checked="false">, outside Advanced Settings.
+        switch = dialog.locator(
+            'xpath=.//span[normalize-space()="Add AI label" or normalize-space()="添加 AI 标签"]'
+            '/ancestor::div[.//input[@role="switch"]][1]//input[@role="switch"]').first
+        if not await switch.count():
+            advanced = dialog.get_by_text(re.compile(r'^(Advanced [Ss]ettings|高级设置)$'))
             if await advanced.count():
                 await advanced.first.click()
                 await dialog.page.wait_for_timeout(800)
-        if not await row.count():
+        if not await switch.count():
             raise RuntimeError('未找到 Instagram「Add AI label」开关，未分享')
-        switch = row.last.locator('input[type="checkbox"], [role="switch"]').first
 
         async def on() -> bool:
             return await switch.evaluate("e => e.checked === true || e.getAttribute('aria-checked') === 'true'")
