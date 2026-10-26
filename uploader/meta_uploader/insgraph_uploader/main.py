@@ -284,12 +284,25 @@ class InstagramUploader:
         async def on() -> bool:
             return await switch.evaluate("e => e.checked === true || e.getAttribute('aria-checked') === 'true'")
 
-        if not await on():
-            await switch.click(force=True)
-        for _ in range(16):
+        # The checkbox is an invisible overlay on the drawn track; try the ways a person turns
+        # it on until Instagram reports it checked.
+        attempts = (
+            lambda: switch.click(),
+            lambda: switch.focus(),
+            lambda: dialog.page.keyboard.press('Space'),
+            lambda: switch.locator('xpath=..').click(force=True),
+        )
+        for attempt in attempts:
             if await on():
                 return
-            await dialog.page.wait_for_timeout(500)
+            try:
+                await attempt()
+            except Exception:
+                pass
+            for _ in range(6):
+                if await on():
+                    return
+                await dialog.page.wait_for_timeout(500)
         raise RuntimeError('Instagram AI 标签未打开，未分享')
 
     async def _publish(self, page: Page, identity: dict) -> None:
