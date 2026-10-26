@@ -74,6 +74,24 @@ class XUploaderTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "不要重发"):
             asyncio.run(x.XPost("hi", "a.json")._publish(FakePage(FakeResponse({"data": {}}))))
 
+    def test_a_failed_reply_is_reported_not_raised(self):
+        class BrokenPage:
+            async def goto(self, url, **kw):
+                raise RuntimeError("navigation failed")
+
+        post = x.XPost("hi", "a.json", reply="https://apps.apple.com/app/id1?ct=x-test")
+        post.post_id = "1849"
+        original = x.REPLY_DELAY_S
+        x.REPLY_DELAY_S = (0, 0)
+        try:
+            asyncio.run(post._post_reply(BrokenPage()))
+        finally:
+            x.REPLY_DELAY_S = original
+        self.assertIsNone(post.reply_url)
+        self.assertEqual(post.reply_error, "navigation failed")
+        with self.assertRaises(ValueError):
+            x.XPost("hi", "a.json", reply="字" * 141)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,9 @@ Runs the upstream uploaders in per-account Chrome profiles (``SAU_PROFILE_ROOT``
      "visibility": "private", "ai": true, "timeout_s": 1800, "page": "Facebook Page name"}
 
 X takes the title and description as one post text; ``video`` is optional there and ``images``
-(up to 4 absolute paths) may replace it, so a text-only post with a link gets X's link card.
+(up to 4 absolute paths) may replace it. ``reply`` (X only) is posted as the first reply 1–3
+minutes later; the result then also carries ``reply_url``, or ``reply_error`` when the post went
+out but the reply did not (never a reason to repost).
     {"action": "login", "platform": "youtube", "account": "pets"}
 
 Result: {"ok": bool, "code": "PUBLISHED|PUBLISH_UNCONFIRMED|LOGIN_REQUIRED|VERIFY_REQUIRED|
@@ -97,9 +99,10 @@ async def publish(job: dict) -> dict:
     if platform == "x":
         from uploader.x_uploader.main import XPost
 
-        app = XPost(caption(job), str(file), media=job.get("images") or ([video] if video else []))
+        app = XPost(caption(job), str(file), media=job.get("images") or ([video] if video else []),
+                    reply=job.get("reply") or "")
         await app.main()
-        return {"url": app.url}
+        return {"url": app.url, "reply_url": app.reply_url, "reply_error": app.reply_error}
     raise ValueError(f"unsupported platform: {platform}")
 
 
@@ -167,7 +170,12 @@ async def run(job: dict) -> dict:
             await login(job)
             return {"ok": True, "code": "LOGGED_IN", "message": "login window closed", "url": None}
         result = await asyncio.wait_for(publish(job), timeout=float(job.get("timeout_s") or 1800))
-        return {"ok": True, "code": "PUBLISHED", "message": "published", "url": result.get("url")}
+        out = {"ok": True, "code": "PUBLISHED", "message": "published", "url": result.get("url")}
+        if job.get("reply"):
+            out["reply_url"] = result.get("reply_url")
+            if result.get("reply_error"):
+                out["reply_error"] = result["reply_error"]
+        return out
     except BaseException as error:  # noqa: BLE001 — every failure becomes one result line
         if isinstance(error, (KeyboardInterrupt, SystemExit)):
             raise

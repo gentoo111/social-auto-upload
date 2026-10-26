@@ -1,16 +1,19 @@
 """X (Twitter) web posting (fork addition; upstream has no X uploader).
 
 Posts through x.com's own composer in the account's Chrome profile, the same way the other
-fork uploaders run: no API key. One post per run: text, plus up to 4 images or 1 video. A post
-with only text and a link gets X's link card (an App Store link shows the app's icon and name).
+fork uploaders run: no API key. One post per run: text, plus up to 4 images or 1 video, and
+optionally a first reply from the same account (the promotion plan keeps links out of the post
+and puts them there).
 
 The post is confirmed by X's own CreateTweet response, which also gives the post id. A click
-without that response is reported as unconfirmed, never retried.
+without that response is reported as unconfirmed, never retried. The reply is confirmed the same
+way, but once the post is live a failed reply never fails the run: it is reported alongside.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import random
 import re
 from pathlib import Path
 
@@ -22,6 +25,8 @@ from utils.profile_browser import async_playwright
 COMPOSE_URL = "https://x.com/compose/post"
 TEXTBOX = '[data-testid="tweetTextarea_0"]'
 POST_BUTTON = '[data-testid="tweetButton"]'
+REPLY_BUTTON = '[data-testid="tweetButtonInline"]'  # the reply box on a post's own page
+REPLY_DELAY_S = (60, 180)  # the first reply follows 1–3 minutes after the post
 FILE_INPUT = 'input[data-testid="fileInput"]'
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 VIDEO_EXT = {".mp4", ".mov", ".m4v", ".webm"}
@@ -70,20 +75,28 @@ def _normal(text: str) -> str:
 
 
 class XPost:
-    def __init__(self, text: str, account_file: str, media: list[str] | None = None):
+    def __init__(self, text: str, account_file: str, media: list[str] | None = None, reply: str = ""):
         self.text = text.strip()
+        self.reply = reply.strip()
         self.account_file = account_file
         if not self.text and not media:
             raise ValueError("X 帖子需要正文或媒体")
-        if weighted_length(self.text) > MAX_WEIGHT:
-            raise ValueError(f"X 正文超过 {MAX_WEIGHT} 字符（中文和表情按 2 计，链接按 23 计）："
-                             f"现在 {weighted_length(self.text)}")
+        for label, value in (("正文", self.text), ("首条回复", self.reply)):
+            if weighted_length(value) > MAX_WEIGHT:
+                raise ValueError(f"X {label}超过 {MAX_WEIGHT} 字符（中文和表情按 2 计，链接按 23 计）："
+                                 f"现在 {weighted_length(value)}")
         self.media = check_media(media or [])
         self.post_id: str | None = None
+        self.reply_id: str | None = None
+        self.reply_error: str | None = None
 
     @property
     def url(self) -> str | None:
         return f"https://x.com/i/status/{self.post_id}" if self.post_id else None
+
+    @property
+    def reply_url(self) -> str | None:
+        return f"https://x.com/i/status/{self.reply_id}" if self.reply_id else None
 
     async def _assert_session(self, page: Page) -> None:
         if re.search(r"/(i/flow/)?login|/logout", page.url):
@@ -92,10 +105,10 @@ class XPost:
                 re.compile(r"Your account (is|has been) locked|unusual activity")).count():
             raise VerificationRequired("X 要求验证账号，未发布；请主人在该账号的 Chrome 里完成验证")
 
-    async def _type(self, page: Page) -> None:
+    async def _type(self, page: Page, text: str) -> None:
         box = page.locator(TEXTBOX).first
         await box.click()
-        for index, line in enumerate(self.text.split("\n")):
+        for index, line in enumerate(text.split("\n")):
             if index:
                 await page.keyboard.press("Enter")
             if line:
@@ -106,11 +119,11 @@ class XPost:
         await page.keyboard.press("Space")
         await page.wait_for_timeout(800)
         typed = await box.inner_text()
-        if _normal(typed) != _normal(self.text):
+        if _normal(typed) != _normal(text):
             raise RuntimeError(f"X 正文没有完整写入（写入的是 {typed[:80]!r}），未发布")
 
-    async def _wait_ready(self, page: Page) -> None:
-        button = page.locator(POST_BUTTON).first
+    async def _wait_ready(self, page: Page, selector: str = POST_BUTTON) -> None:
+        button = page.locator(selector).first
         deadline = asyncio.get_running_loop().time() + UPLOAD_TIMEOUT_S
         while asyncio.get_running_loop().time() < deadline:
             if await button.count() and await button.get_attribute("aria-disabled") != "true":
@@ -119,6 +132,10 @@ class XPost:
         raise RuntimeError("X 媒体上传超时，发布按钮一直不可用，未发布")
 
     async def _publish(self, page: Page) -> None:
+        self.post_id = await self._create(page, POST_BUTTON)
+
+    async def _create(self, page: Page, selector: str) -> str:
+        """Press the button and return the new post's id from X's CreateTweet response."""
         responses: asyncio.Queue = asyncio.Queue()
 
         def on_response(response):
@@ -127,7 +144,7 @@ class XPost:
 
         page.on("response", on_response)
         try:
-            await page.locator(POST_BUTTON).first.click(timeout=15000)
+            await page.locator(selector).first.click(timeout=15000)
         except Exception:
             # The click never fired (something still covers the button): post with X's own
             # shortcut from the text box instead.
@@ -145,8 +162,7 @@ class XPost:
         errors = body.get("errors") or []
         result = (((body.get("data") or {}).get("create_tweet") or {}).get("tweet_results") or {}).get("result") or {}
         if result.get("rest_id"):
-            self.post_id = result["rest_id"]
-            return
+            return result["rest_id"]
         if errors:
             # X rejected the post (duplicate text 187, automation 226, …): nothing was published.
             detail = "; ".join(f"{e.get('code')}: {e.get('message')}" for e in errors)[:300]
@@ -167,11 +183,29 @@ class XPost:
                     x_logger.info(f"[x] uploading {len(self.media)} media file(s)")
                     await page.locator(FILE_INPUT).first.set_input_files(self.media)
                     await page.wait_for_timeout(2000)
-                await self._type(page)
+                await self._type(page, self.text)
                 await self._wait_ready(page)
                 await self._assert_session(page)
                 await self._publish(page)
                 x_logger.success(f"[x] published {self.url}")
                 await page.wait_for_timeout(3000)
+                if self.reply:
+                    await self._post_reply(page)
             finally:
                 await browser.close()
+
+    async def _post_reply(self, page: Page) -> None:
+        """Reply to the new post from its own page; any failure is recorded, never raised."""
+        try:
+            await asyncio.sleep(random.uniform(*REPLY_DELAY_S))
+            await page.goto(self.url, wait_until="domcontentloaded")
+            await page.wait_for_timeout(4000)
+            await self._assert_session(page)
+            await page.locator(TEXTBOX).first.wait_for(state="visible", timeout=30000)
+            await self._type(page, self.reply)
+            await self._wait_ready(page, REPLY_BUTTON)
+            self.reply_id = await self._create(page, REPLY_BUTTON)
+            x_logger.success(f"[x] replied {self.reply_url}")
+        except Exception as error:  # noqa: BLE001 — the post is live; report, never retry
+            self.reply_error = str(error)[:300] or type(error).__name__
+            x_logger.error(f"[x] first reply failed: {self.reply_error}")

@@ -56,9 +56,11 @@ class StudioPublishTests(unittest.TestCase):
         seen = {}
 
         class FakeX:
-            def __init__(self, text, account_file, media=None):
-                seen.update(text=text, account_file=account_file, media=media)
+            def __init__(self, text, account_file, media=None, reply=""):
+                seen.update(text=text, account_file=account_file, media=media, reply=reply)
                 self.url = "https://x.com/i/status/1"
+                self.reply_url = "https://x.com/i/status/2" if reply else None
+                self.reply_error = None
 
             async def main(self):
                 pass
@@ -75,8 +77,12 @@ class StudioPublishTests(unittest.TestCase):
             self.assertEqual(seen["media"], [str(image)])
             self.assertEqual(Path(seen["account_file"]).name, "x_apps.json")
             text_only = asyncio.run(sp.run({**job, "images": []}))
+            self.assertEqual(seen["media"], [])
+            replied = asyncio.run(sp.run({**job, "reply": "https://apps.apple.com/app/id1?ct=x"}))
+        self.assertEqual(replied["reply_url"], "https://x.com/i/status/2")
+        self.assertEqual(seen["reply"], "https://apps.apple.com/app/id1?ct=x")
+        self.assertNotIn("reply_url", text_only)
         self.assertEqual(text_only["code"], "PUBLISHED")
-        self.assertEqual(seen["media"], [])
         self.assertEqual(asyncio.run(sp.run({"platform": "x", "account": "apps"}))["code"], "BAD_REQUEST")
 
     def test_failures_are_classified(self):
