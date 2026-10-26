@@ -107,7 +107,11 @@ class XPost:
 
     async def _type(self, page: Page, text: str) -> None:
         box = page.locator(TEXTBOX).first
-        await box.click()
+        try:
+            await box.click(timeout=10000)
+        except Exception as error:  # noqa: BLE001 — something covers the box; focus it directly
+            x_logger.info(f"[x] text box click failed, focusing it instead: {str(error)[-300:]}")
+            await box.focus()
         for index, line in enumerate(text.split("\n")):
             if index:
                 await page.keyboard.press("Enter")
@@ -179,11 +183,12 @@ class XPost:
                 await page.wait_for_timeout(4000)
                 await self._assert_session(page)
                 await page.locator(TEXTBOX).first.wait_for(state="visible", timeout=30000)
+                # Text first: once media is attached its upload and preview layers shift the box.
+                await self._type(page, self.text)
                 if self.media:
                     x_logger.info(f"[x] uploading {len(self.media)} media file(s)")
                     await page.locator(FILE_INPUT).first.set_input_files(self.media)
                     await page.wait_for_timeout(2000)
-                await self._type(page, self.text)
                 await self._wait_ready(page)
                 await self._assert_session(page)
                 await self._publish(page)
