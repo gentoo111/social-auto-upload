@@ -222,9 +222,20 @@ class MetaBusinessUploader(BaseVideoUploader):
         # 视频在新版 Business Suite 会进入“创建 Reels”向导，不渲染 video 标签；
         # 图片则留在原 composer。两种状态都必须等到文件名或向导业务标题出现。
         if self.video_file:
+            wizard = page.locator('[data-surface$="lib:bizweb_create_reel"]')
+            # Fork (seen live 2026-10-26, zh-CN account): the video can stay in the ordinary post
+            # composer with a "转至 Reels 编辑器 / Switch to Reels editor" tip instead of opening the
+            # Reel wizard; switch over explicitly so it is published as a Reel.
+            switch = page.get_by_text(re.compile(r"^(转至 Reels 编辑器|Switch to Reels editor|Go to Reels editor)$"))
+            deadline = asyncio.get_running_loop().time() + 180
+            while not await wizard.count():
+                if asyncio.get_running_loop().time() > deadline:
+                    raise RuntimeError("视频上传后未进入 Reels 编辑器，未发布")
+                if await switch.count() and await switch.first.is_visible():
+                    await switch.first.click()
+                await page.wait_for_timeout(1500)
             await page.get_by_text(self.video_file.name, exact=True).wait_for(state="visible", timeout=180_000)
-            # 新版 Reel 向导有独立业务 surface；不依赖 Create reel/创建 Reels 标题。
-            await page.locator('[data-surface$="lib:bizweb_create_reel"]').wait_for()
+            await wizard.wait_for()
             await dismiss_guidance_cards(page)
             await page.get_by_text('100%', exact=True).wait_for(state='visible', timeout=180000)
         else:
