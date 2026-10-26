@@ -177,6 +177,7 @@ class MetaBusinessUploader(BaseVideoUploader):
         self.headless = headless
         self.result_file = Path(result_file) if result_file else Path('.local/meta-results') / f'{uuid4().hex}.json'
         self.result = {"platform": platform, "title": self.title, "status": "not_submitted"}
+        self._reel_wizard = True
 
     def _caption(self) -> str:
         parts = [self.title, self.description] if self.description else [self.title]
@@ -223,30 +224,23 @@ class MetaBusinessUploader(BaseVideoUploader):
         # 图片则留在原 composer。两种状态都必须等到文件名或向导业务标题出现。
         if self.video_file:
             wizard = page.locator('[data-surface$="lib:bizweb_create_reel"]')
-            # Fork (seen live 2026-10-26, zh-CN account): the video can stay in the ordinary post
-            # composer with a "转至 Reels 编辑器 / Switch to Reels editor" tip instead of opening the
-            # Reel wizard; switch over explicitly so it is published as a Reel.
-            switch = page.get_by_text(re.compile(r"^(转至 Reels 编辑器|Switch to Reels editor|Go to Reels editor)$"))
+            # Fork (seen live 2026-10-26, zh-CN Page): the video can stay in the ordinary post
+            # composer ("576 × 1024 • 0:15 秒") instead of opening the Reel wizard. Facebook now
+            # publishes every video as a Reel ("你在 Facebook 发布的所有视频都是 Reels 啦"), so that
+            # composer is published as is; its Switch-to-Reels tip sits under an overlay anyway.
+            tile = media.get_by_text(re.compile(r"^\d+ × \d+ • "))
             deadline = asyncio.get_running_loop().time() + 180
-            tries = 0
-            while not await wizard.count():
+            while True:
+                if await wizard.count():
+                    self._reel_wizard = True
+                    break
+                if await tile.count() and await tile.first.is_visible():
+                    self._reel_wizard = False
+                    await dismiss_guidance_cards(page)
+                    return
                 if asyncio.get_running_loop().time() > deadline:
-                    raise RuntimeError("视频上传后未进入 Reels 编辑器，未发布")
-                if await switch.count() and await switch.first.is_visible():
-                    # A covering layer can swallow the normal click; fall back to a forced one,
-                    # then to the element's own click handler.
-                    target = switch.first
-                    try:
-                        if tries == 0:
-                            await target.click(timeout=5000)
-                        elif tries == 1:
-                            await target.click(force=True, timeout=5000)
-                        else:
-                            await target.evaluate("e => (e.closest('[role=button],a') || e).click()")
-                    except Exception:
-                        pass
-                    tries += 1
-                await page.wait_for_timeout(2000)
+                    raise RuntimeError("视频上传后既没有进入 Reels 向导，也没有出现在发帖框，未发布")
+                await page.wait_for_timeout(1500)
             await page.get_by_text(self.video_file.name, exact=True).wait_for(state="visible", timeout=180_000)
             await wizard.wait_for()
             await dismiss_guidance_cards(page)
@@ -277,7 +271,7 @@ class MetaBusinessUploader(BaseVideoUploader):
             raise RuntimeError("Business Suite 正文未读回预期内容")
 
     async def _advance_reels(self, page: Page) -> None:
-        if not self.video_file:
+        if not self.video_file or not self._reel_wizard:
             return
         root = page.locator('[data-surface$="lib:bizweb_create_reel"]')
         # 向导的三个步骤有 aria-labelledby，当前步骤有 aria-current；缩略图切换没有。
@@ -379,7 +373,7 @@ class MetaBusinessUploader(BaseVideoUploader):
     async def _publish(self, page: Page) -> None:
         # 图文底栏的业务动作固定为取消、存草稿、最终提交；限定 footer 并严格核对三项，
         # 只在已观察的布局中采用此业务顺序，布局变化时停止，禁止用全页同名按钮或猜测翻译。
-        if not self.video_file:
+        if not self.video_file or not self._reel_wizard:
             actions = page.locator('[data-surface$="lib:bizweb_create_post:footer"] [role="button"]')
             await expect(actions).to_have_count(3)
             button = actions.nth(2)
@@ -412,7 +406,15 @@ class MetaBusinessUploader(BaseVideoUploader):
         if pending_id:
             self.result['content_id'] = str(pending_id)
         self.result_file.write_text(json.dumps(self.result, ensure_ascii=False, indent=2), encoding='utf-8')
-        if self.video_file:
+        if self.video_file and not self._reel_wizard and not self.schedule:
+            # Fork: a composer video is processed into a Reel after an error-free creation
+            # response; there is no completion dialog, and the list may not show it yet.
+            self.result['status'] = 'processing'
+            self.result['schedule'] = None
+            self.result['timezone'] = 'Asia/Shanghai'
+            self.result_file.write_text(json.dumps(self.result, ensure_ascii=False, indent=2), encoding='utf-8')
+            return
+        if self.video_file and self._reel_wizard:
             # 创建响应后页面仍执行后续发布步骤，不能立即导航走；实测完成框带本次标题、
             # 作品预览及关闭/完成两个动作。标题是本次业务参数，非某种语言的成功文案。
             completion = page.locator('[role="dialog"][aria-labelledby][tabindex="-1"]').filter(has_text=self.title)
