@@ -60,6 +60,9 @@ class _ProfileBrowser:
             channel="chrome",
             headless=False,
             no_viewport=True,
+            # Playwright launches with --no-sandbox unless told otherwise; keep Chrome's sandbox
+            # on like an ordinary Chrome (no "unsupported command-line flag" bar, no weaker isolation).
+            chromium_sandbox=True,
             **extra,
         )
         self._contexts.append(context)

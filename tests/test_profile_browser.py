@@ -43,7 +43,7 @@ class ProfileBrowserTests(unittest.TestCase):
             self.assertEqual(Path(user_data_dir), Path(root) / "douyin_宠物")
             self.assertTrue(Path(user_data_dir).is_dir())
             self.assertEqual(options, {"channel": "chrome", "headless": False, "no_viewport": True,
-                                       "proxy": {"server": "http://p"}})
+                                       "chromium_sandbox": True, "proxy": {"server": "http://p"}})
             self.assertTrue(context.closed)
 
     def test_disabled_without_profile_root(self):
