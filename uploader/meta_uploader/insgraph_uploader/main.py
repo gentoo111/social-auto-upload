@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from patchright.async_api import Locator, Page, Playwright, TimeoutError as BrowserTimeoutError, expect
+from utils import profile_browser
 from utils.profile_browser import async_playwright  # fork: per-account Chrome profiles
 
 INSTAGRAM_HOME_URL = "https://www.instagram.com/"
@@ -67,9 +68,13 @@ async def instagram_identity(page: Page, account_file: Path) -> dict:
     """将当前会话用户 ID 与账号文件绑定的 ID 比对，读取自己的导航主页。"""
     if await _is_instagram_logged_out(page):
         raise RuntimeError("Instagram 未登录，请执行 sau instagram login")
-    state = json.loads(account_file.read_text(encoding="utf-8"))
-    expected = {c['value'] for c in state['cookies'] if c['name'] == 'ds_user_id' and c['domain'].lstrip('.') == 'instagram.com'}
     current = {c['value'] for c in await page.context.cookies(INSTAGRAM_HOME_URL) if c['name'] == 'ds_user_id'}
+    if profile_browser.enabled() and not account_file.is_file():
+        # Fork: with per-account Chrome profiles the profile is the account binding.
+        expected = current
+    else:
+        state = json.loads(account_file.read_text(encoding="utf-8"))
+        expected = {c['value'] for c in state['cookies'] if c['name'] == 'ds_user_id' and c['domain'].lstrip('.') == 'instagram.com'}
     if len(expected) != 1 or current != expected:
         raise RuntimeError("Instagram 当前登录用户与账号文件绑定的用户 ID 不匹配")
     # 当前用户导航头像位于 aria-selected 图标容器中；动态流和推荐头像没有导航选中状态。
