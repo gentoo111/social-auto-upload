@@ -22,7 +22,7 @@ class FakeButton:
         self.page = page
         self.first = self
 
-    async def click(self):
+    async def click(self, timeout=None):
         if self.page.reply is not None:
             self.page.handler(self.page.reply)
 

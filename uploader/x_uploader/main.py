@@ -101,6 +101,9 @@ class XPost:
             if line:
                 await page.keyboard.insert_text(line)
             await page.wait_for_timeout(150)
+        # A trailing #hashtag or @mention leaves X's suggestion list open, and its invisible layer
+        # covers the Post button; a space closes it (X trims trailing whitespace).
+        await page.keyboard.press("Space")
         await page.wait_for_timeout(800)
         typed = await box.inner_text()
         if _normal(typed) != _normal(self.text):
@@ -123,7 +126,14 @@ class XPost:
                 responses.put_nowait(response)
 
         page.on("response", on_response)
-        await page.locator(POST_BUTTON).first.click()
+        try:
+            await page.locator(POST_BUTTON).first.click(timeout=15000)
+        except Exception:
+            # The click never fired (something still covers the button): post with X's own
+            # shortcut from the text box instead.
+            x_logger.info("[x] Post button covered; using Cmd/Ctrl+Enter")
+            await page.locator(TEXTBOX).first.focus()
+            await page.keyboard.press("ControlOrMeta+Enter")
         try:
             response = await asyncio.wait_for(responses.get(), CONFIRM_TIMEOUT_S)
         except asyncio.TimeoutError:
