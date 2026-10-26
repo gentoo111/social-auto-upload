@@ -235,8 +235,8 @@ class MetaBusinessUploader(BaseVideoUploader):
                     self._reel_wizard = True
                     break
                 if await tile.count() and await tile.first.is_visible():
+                    # Leave the tip cards alone: their buttons include the Switch-to-Reels action.
                     self._reel_wizard = False
-                    await dismiss_guidance_cards(page)
                     return
                 if asyncio.get_running_loop().time() > deadline:
                     raise RuntimeError("视频上传后既没有进入 Reels 向导，也没有出现在发帖框，未发布")
