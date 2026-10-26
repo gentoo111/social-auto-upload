@@ -63,3 +63,4 @@ weibo_logger = create_logger('weibo', 'logs/weibo.log')
 hupu_logger = create_logger('hupu', 'logs/hupu.log')
 dayu_logger = create_logger('dayu', 'logs/dayu.log')
 facebook_logger = create_logger('facebook', 'logs/facebook.log')
+x_logger = create_logger('x', 'logs/x.log')  # fork

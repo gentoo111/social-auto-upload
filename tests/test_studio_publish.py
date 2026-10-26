@@ -52,6 +52,33 @@ class StudioPublishTests(unittest.TestCase):
         self.assertEqual(seen["tags"], ["dog", "bulldog"])
         self.assertEqual(Path(seen["account_file"]).name, "youtube_油管.json")
 
+    def test_x_posts_text_with_optional_images(self):
+        seen = {}
+
+        class FakeX:
+            def __init__(self, text, account_file, media=None):
+                seen.update(text=text, account_file=account_file, media=media)
+                self.url = "https://x.com/i/status/1"
+
+            async def main(self):
+                pass
+
+        image = Path(self.tmp.name) / "shot.png"
+        image.write_bytes(b"x")
+        module = types.SimpleNamespace(XPost=FakeX)
+        job = {"platform": "x", "account": "apps", "title": "New app", "description": "https://a.b/c",
+               "images": [str(image)]}
+        with mock.patch.dict(sys.modules, {"uploader.x_uploader.main": module}):
+            result = asyncio.run(sp.run(job))
+            self.assertEqual(result["url"], "https://x.com/i/status/1")
+            self.assertEqual(seen["text"], "New app\nhttps://a.b/c")
+            self.assertEqual(seen["media"], [str(image)])
+            self.assertEqual(Path(seen["account_file"]).name, "x_apps.json")
+            text_only = asyncio.run(sp.run({**job, "images": []}))
+        self.assertEqual(text_only["code"], "PUBLISHED")
+        self.assertEqual(seen["media"], [])
+        self.assertEqual(asyncio.run(sp.run({"platform": "x", "account": "apps"}))["code"], "BAD_REQUEST")
+
     def test_failures_are_classified(self):
         class VerificationRequired(RuntimeError):
             pass

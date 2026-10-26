@@ -3,9 +3,12 @@
 One job per run, read as JSON from stdin; one JSON result printed as the last stdout line.
 Runs the upstream uploaders in per-account Chrome profiles (``SAU_PROFILE_ROOT`` is required).
 
-    {"action": "publish", "platform": "douyin|tiktok|youtube|instagram|facebook", "account": "pets",
+    {"action": "publish", "platform": "douyin|tiktok|youtube|instagram|facebook|x", "account": "pets",
      "video": "/abs/clip.mp4", "title": "...", "description": "...", "tags": ["a"],
      "visibility": "private", "ai": true, "timeout_s": 1800, "page": "Facebook Page name"}
+
+X takes the title and description as one post text; ``video`` is optional there and ``images``
+(up to 4 absolute paths) may replace it, so a text-only post with a link gets X's link card.
     {"action": "login", "platform": "youtube", "account": "pets"}
 
 Result: {"ok": bool, "code": "PUBLISHED|PUBLISH_UNCONFIRMED|LOGIN_REQUIRED|VERIFY_REQUIRED|
@@ -21,13 +24,14 @@ import re
 import sys
 from pathlib import Path
 
-PLATFORMS = ("douyin", "tiktok", "youtube", "instagram", "facebook")
+PLATFORMS = ("douyin", "tiktok", "youtube", "instagram", "facebook", "x")
 LOGIN_URLS = {
     "douyin": "https://creator.douyin.com/",
     "tiktok": "https://www.tiktok.com/tiktokstudio/upload?lang=en",
     "youtube": "https://studio.youtube.com/",
     "instagram": "https://www.instagram.com/",
     "facebook": "https://business.facebook.com/latest/composer/",
+    "x": "https://x.com/home",
 }
 LOGIN_HINT = re.compile(r"登录态失效|cookie|login|Log in|未登录|sign ?in", re.I)
 UNCONFIRMED_HINT = re.compile(r"未确认|不要重发|勿重复|待查询|submission_unknown|已提交")
@@ -47,7 +51,7 @@ async def publish(job: dict) -> dict:
     platform, file = job["platform"], account_file(job["platform"], job["account"])
     private, ai = job.get("visibility") == "private", bool(job.get("ai"))
     tags = [t.lstrip("#") for t in job.get("tags") or [] if t.strip("# ")]
-    video = str(Path(job["video"]).resolve())
+    video = str(Path(job["video"]).resolve()) if job.get("video") else None
     if platform == "douyin":
         from uploader.douyin_uploader.main import DouYinVideo
 
@@ -90,6 +94,12 @@ async def publish(job: dict) -> dict:
         page_id, content_id = result.get("page_id"), result.get("content_id")
         return {"url": f"https://business.facebook.com/latest/posts/published_posts?asset_id={page_id}"
                 if page_id else None, "content_id": content_id}
+    if platform == "x":
+        from uploader.x_uploader.main import XPost
+
+        app = XPost(caption(job), str(file), media=job.get("images") or ([video] if video else []))
+        await app.main()
+        return {"url": app.url}
     raise ValueError(f"unsupported platform: {platform}")
 
 
@@ -134,7 +144,13 @@ def validate(job: dict) -> str | None:
     if not isinstance(job.get("account"), str) or not job["account"].strip():
         return "account is required"
     if job.get("action", "publish") == "publish":
-        if not job.get("title") or not job.get("video") or not Path(job["video"]).is_file():
+        if job["platform"] == "x":
+            media = list(job.get("images") or []) + ([job["video"]] if job.get("video") else [])
+            if not (job.get("title") or job.get("description")) and not media:
+                return "an X post needs text or media"
+            if any(not Path(m).is_file() for m in media):
+                return "media files must exist"
+        elif not job.get("title") or not job.get("video") or not Path(job["video"]).is_file():
             return "title and an existing video file are required"
         if job.get("visibility", "public") not in ("public", "private"):
             return "visibility must be public or private"
