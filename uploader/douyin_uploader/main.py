@@ -10,6 +10,7 @@ from pathlib import Path
 from patchright.async_api import Page
 from patchright.async_api import Playwright
 from utils.profile_browser import async_playwright  # fork: per-account Chrome profiles
+from utils import profile_browser
 
 from conf import BASE_DIR, DEBUG_MODE, LOCAL_CHROME_HEADLESS, LOCAL_CHROME_PATH
 from uploader.base_video import BaseVideoUploader
@@ -110,7 +111,8 @@ def _build_login_result(success: bool, status: str, message: str, account_file: 
 
 
 async def cookie_auth(account_file):
-    if not os.path.exists(account_file):
+    # fork: a Chrome profile holds the login, so there is no cookie file to require.
+    if not profile_browser.enabled() and not os.path.exists(account_file):
         return False
 
     use_headless = os.environ.get("DOUYIN_COOKIE_AUTH_HEADLESS", "true").lower() in ("1", "true", "yes")
@@ -351,7 +353,7 @@ class DouYinBaseUploader(BaseVideoUploader):
         self.headless = headless
 
     async def validate_base_args(self):
-        if not os.path.exists(self.account_file):
+        if not profile_browser.enabled() and not os.path.exists(self.account_file):
             raise RuntimeError(f"cookie文件不存在，请先完成抖音登录: {self.account_file}")
         if not await cookie_auth(self.account_file):
             raise RuntimeError(f"cookie文件已失效，请先完成抖音登录: {self.account_file}")

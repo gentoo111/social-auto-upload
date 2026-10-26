@@ -58,6 +58,15 @@ class ProfileBrowserTests(unittest.TestCase):
             self.assertIs(asyncio.run(set_init_script(context)), context)
         context.add_init_script.assert_not_called()
 
+    def test_douyin_checks_the_profile_login_without_a_cookie_file(self):
+        from uploader.douyin_uploader import main as douyin
+
+        app = douyin.DouYinVideo("T", "/v.mp4", [], 0, "/nope/douyin_宠物.json")
+        with mock.patch.dict(os.environ, {"SAU_PROFILE_ROOT": "/tmp/x"}), \
+                mock.patch.object(douyin, "cookie_auth", mock.AsyncMock(return_value=True)) as auth:
+            asyncio.run(app.validate_base_args())
+        auth.assert_awaited_once_with("/nope/douyin_宠物.json")
+
 
 if __name__ == "__main__":
     unittest.main()
