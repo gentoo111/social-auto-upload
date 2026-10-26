@@ -94,7 +94,11 @@ async def publish(job: dict) -> dict:
 
 
 async def login(job: dict) -> dict:
-    """Open the account's profile on the platform and wait until the owner closes the window."""
+    """Open the account's profile on the platform; done when the owner closes its windows.
+
+    On macOS closing the last window leaves Chrome running, so the run also ends once no page is
+    left open, then closes the browser itself so the profile is written and unlocked.
+    """
     from utils.profile_browser import async_playwright
 
     async with async_playwright() as playwright:
@@ -104,7 +108,10 @@ async def login(job: dict) -> dict:
         await page.goto(LOGIN_URLS[job["platform"]])
         closed = asyncio.Event()
         context.on("close", lambda *_: closed.set())
-        await closed.wait()
+        while not closed.is_set() and context.pages:
+            await asyncio.sleep(1)
+        if not closed.is_set():
+            await browser.close()
     return {"url": None}
 
 
