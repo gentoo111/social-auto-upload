@@ -100,6 +100,26 @@ class TiktokVideo(object):
         self.ai_generated = ai_generated
         self.video_id = None
 
+    async def dismiss_prompts(self, page):
+        """Fork: one-time TikTok Studio dialogs cover the caption editor after a file is chosen.
+
+        "Turn on automatic content checks?" is answered with Turn on (copyright and For You
+        eligibility checks, both harmless to a post); feature tips are closed with Got it.
+        """
+        for _ in range(5):
+            checks = page.locator('div.common-modal-body:has-text("automatic content checks")')
+            if await checks.count() and await checks.first.is_visible():
+                await page.locator('div.common-modal-footer button:has-text("Turn on")').first.click()
+                tiktok_logger.info("  [-] turned on automatic content checks")
+                await page.wait_for_timeout(1000)
+                continue
+            tip = page.get_by_role("button", name=re.compile(r"^(Got it|OK)$"))
+            if await tip.count() and await tip.first.is_visible():
+                await tip.first.click()
+                await page.wait_for_timeout(500)
+                continue
+            await page.wait_for_timeout(1000)
+
     async def declare_ai(self, page):
         aigc = self.locator_base.locator(TK_AIGC)
         switch = aigc.locator('div.Switch__content')
@@ -249,6 +269,7 @@ class TiktokVideo(object):
         file_chooser = await fc_info.value
         await file_chooser.set_files(self.file_path)
 
+        await self.dismiss_prompts(page)
         await self.add_title_tags(page)
         # detect upload status
         await self.detect_upload_status(page)
@@ -284,7 +305,7 @@ class TiktokVideo(object):
 
         await page.keyboard.press("End")
 
-        await page.keyboard.press("Control+A")
+        await page.keyboard.press("ControlOrMeta+A")  # fork: Meta on macOS
 
         await page.keyboard.press("Delete")
 
