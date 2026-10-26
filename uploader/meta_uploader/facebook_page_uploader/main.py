@@ -228,12 +228,25 @@ class MetaBusinessUploader(BaseVideoUploader):
             # Reel wizard; switch over explicitly so it is published as a Reel.
             switch = page.get_by_text(re.compile(r"^(转至 Reels 编辑器|Switch to Reels editor|Go to Reels editor)$"))
             deadline = asyncio.get_running_loop().time() + 180
+            tries = 0
             while not await wizard.count():
                 if asyncio.get_running_loop().time() > deadline:
                     raise RuntimeError("视频上传后未进入 Reels 编辑器，未发布")
                 if await switch.count() and await switch.first.is_visible():
-                    await switch.first.click()
-                await page.wait_for_timeout(1500)
+                    # A covering layer can swallow the normal click; fall back to a forced one,
+                    # then to the element's own click handler.
+                    target = switch.first
+                    try:
+                        if tries == 0:
+                            await target.click(timeout=5000)
+                        elif tries == 1:
+                            await target.click(force=True, timeout=5000)
+                        else:
+                            await target.evaluate("e => (e.closest('[role=button],a') || e).click()")
+                    except Exception:
+                        pass
+                    tries += 1
+                await page.wait_for_timeout(2000)
             await page.get_by_text(self.video_file.name, exact=True).wait_for(state="visible", timeout=180_000)
             await wizard.wait_for()
             await dismiss_guidance_cards(page)
