@@ -52,6 +52,27 @@ class StudioPublishTests(unittest.TestCase):
         self.assertEqual(seen["tags"], ["dog", "bulldog"])
         self.assertEqual(Path(seen["account_file"]).name, "youtube_油管.json")
 
+    def test_douyin_location_is_passed_and_reported(self):
+        seen = {}
+
+        class FakeDouyin:
+            def __init__(self, title, video, tags, date, account_file, **kw):
+                seen.update(kw)
+                self.location_set = "New Zealand" if kw.get("location") else None
+                self.location_error = None
+
+            async def douyin_upload_video(self):
+                pass
+
+        module = types.SimpleNamespace(DouYinVideo=FakeDouyin)
+        with mock.patch.dict(sys.modules, {"uploader.douyin_uploader.main": module}):
+            result = asyncio.run(sp.run(self.job(platform="douyin", visibility="public", location="New Zealand")))
+            plain = asyncio.run(sp.run(self.job(platform="douyin", visibility="public")))
+        self.assertEqual(seen["location"], None)  # the last call had no location
+        self.assertEqual(result["location"], "New Zealand")
+        self.assertNotIn("location_error", result)
+        self.assertNotIn("location", plain)
+
     def test_x_posts_text_with_optional_images(self):
         seen = {}
 

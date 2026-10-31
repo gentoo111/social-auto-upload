@@ -11,6 +11,8 @@ X takes the title and description as one post text; ``video`` is optional there 
 (up to 4 absolute paths) may replace it. ``reply`` (X only) is posted as the first reply 1–3
 minutes later; the result then also carries ``reply_url``, or ``reply_error`` when the post went
 out but the reply did not (never a reason to repost).
+``location`` (Douyin only) picks the 位置 entry whose name matches exactly; the result then carries
+``location`` (the name chosen) or ``location_error``. A missing location never blocks the post.
     {"action": "login", "platform": "youtube", "account": "pets"}
 
 Result: {"ok": bool, "code": "PUBLISHED|PUBLISH_UNCONFIRMED|LOGIN_REQUIRED|VERIFY_REQUIRED|
@@ -59,9 +61,10 @@ async def publish(job: dict) -> dict:
 
         app = DouYinVideo(job["title"], video, tags, 0, str(file), desc=job.get("description", ""),
                           declaration="内容由AI生成" if ai else None,
-                          visibility="private" if private else "public")
+                          visibility="private" if private else "public",
+                          location=job.get("location") or None)
         await app.douyin_upload_video()
-        return {"url": None}
+        return {"url": None, "location": app.location_set, "location_error": app.location_error}
     if platform == "tiktok":
         from uploader.tk_uploader.main_chrome import TiktokVideo
 
@@ -171,6 +174,10 @@ async def run(job: dict) -> dict:
             return {"ok": True, "code": "LOGGED_IN", "message": "login window closed", "url": None}
         result = await asyncio.wait_for(publish(job), timeout=float(job.get("timeout_s") or 1800))
         out = {"ok": True, "code": "PUBLISHED", "message": "published", "url": result.get("url")}
+        if job.get("location"):
+            out["location"] = result.get("location")
+            if result.get("location_error"):
+                out["location_error"] = result["location_error"]
         if job.get("reply"):
             out["reply_url"] = result.get("reply_url")
             if result.get("reply_error"):

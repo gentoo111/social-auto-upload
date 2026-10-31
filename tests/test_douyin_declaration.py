@@ -94,5 +94,24 @@ class DouyinDeclarationTests(unittest.TestCase):
         browser.close.assert_awaited_once()
 
 
+class DouyinLocationTests(unittest.TestCase):
+    def test_no_location_touches_nothing(self):
+        video = DouYinVideo("标题", "/tmp/demo.mp4", [], 0, "/tmp/cookie.json")
+        page = MagicMock()
+        asyncio.run(video.apply_location(page))
+        page.locator.assert_not_called()
+        self.assertIsNone(video.location_set)
+
+    def test_page_errors_are_recorded_not_raised(self):
+        video = DouYinVideo("标题", "/tmp/demo.mp4", [], 0, "/tmp/cookie.json", location=" New Zealand ")
+        self.assertEqual(video.location, "New Zealand")
+        page = MagicMock()
+        page.locator.side_effect = RuntimeError("page gone")
+        page.keyboard.press = AsyncMock()
+        asyncio.run(video.apply_location(page))
+        self.assertIsNone(video.location_set)
+        self.assertIn("page gone", video.location_error)
+
+
 if __name__ == "__main__":
     unittest.main()

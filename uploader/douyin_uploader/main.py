@@ -649,6 +649,7 @@ class DouYinVideo(DouYinBaseUploader):
         headless: bool = LOCAL_CHROME_HEADLESS,
         declaration: str | None = None,
         visibility: str = "public",
+        location: str | None = None,
     ):
         super().__init__(
             publish_date=publish_date,
@@ -670,6 +671,54 @@ class DouYinVideo(DouYinBaseUploader):
         if visibility not in ("public", "private"):
             raise ValueError(f"unsupported Douyin visibility: {visibility}")
         self.visibility = visibility
+        self.location = location.strip() if location and location.strip() else None
+        self.location_set: str | None = None
+        self.location_error: str | None = None
+
+    async def apply_location(self, page: Page) -> None:
+        """Fork: 「位置」选名称与 self.location 完全一致的地点（如 New Zealand 国家条目）。
+
+        抖音按名称模糊搜索，前几条常是名字里带关键词的商家，所以不点第一条，只点名称完全一致的；
+        名称和地址都一致的优先。找不到或没选上只记原因，不阻止发布。
+        """
+        if not self.location:
+            return
+        try:
+            trigger = page.locator('div.semi-select span:has-text("输入地理位置")').first
+            if not await trigger.count():
+                raise RuntimeError("没找到「位置」输入框")
+            await trigger.scroll_into_view_if_needed()
+            await trigger.click()
+            await page.wait_for_timeout(1200)
+            await page.keyboard.type(self.location, delay=120)
+            options = page.locator('[role="option"], .semi-select-option')
+            for _ in range(20):
+                if await options.count():
+                    break
+                await asyncio.sleep(0.5)
+            await page.wait_for_timeout(1500)
+            texts = [t.strip() for t in await options.all_inner_texts()]
+            parts = [[line.strip() for line in t.split("\n") if line.strip()] for t in texts]
+            want = self.location.casefold()
+            exact = [i for i, p in enumerate(parts) if p and p[0].casefold() == want]
+            both = [i for i in exact if len(parts[i]) > 1 and parts[i][1].casefold() == want]
+            pick = (both or exact or [None])[0]
+            if pick is None:
+                raise RuntimeError("搜索结果里没有名为「" + self.location + "」的地点")
+            await options.nth(pick).click()
+            await page.wait_for_timeout(1000)
+            shown = page.locator("div.semi-select .semi-select-selection-text").filter(has_text=parts[pick][0])
+            if not await shown.count():
+                raise RuntimeError("点了「" + parts[pick][0] + "」但页面没有显示已选")
+            self.location_set = parts[pick][0]
+            douyin_logger.info(_msg("📍", f"位置已选：{self.location_set}"))
+        except Exception as error:  # noqa: BLE001 — 位置是加分项，不能拦住发布
+            self.location_error = str(error)[:200] or type(error).__name__
+            douyin_logger.warning(_msg("📍", f"位置没加上：{self.location_error}"))
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                pass
 
     async def apply_visibility(self, page: Page) -> None:
         """Fork: 「谁可以看」选「仅自己可见」，确认已选中，否则拒绝发布（公开为默认，不动）。"""
@@ -1086,6 +1135,7 @@ class DouYinVideo(DouYinBaseUploader):
             self.declaration = "内容由AI生成"
         await self.apply_self_declaration(page)
         await self.apply_visibility(page)
+        await self.apply_location(page)
 
         # 先归集：此时尚未打开封面弹窗，避免 dy-creator-content-portal 封面浮层拦截合集下拉
         # （实测：封面弹窗在 headless 下常滞留"检测中"未关闭，会盖住"添加合集"下拉）
