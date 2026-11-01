@@ -172,7 +172,9 @@ async def _confirm_published(page: Page, timeout_ms: int = 90000) -> bool:
     waited = 0
     while waited < timeout_ms:
         try:
-            if await page.locator(PUBLISHED_DIALOGS).first.is_visible():
+            # A hidden copy of these dialogs can sit earlier in the DOM, so only count a visible one
+            # (11-01: eight Shorts went Public while `.first` kept reporting not visible).
+            if await page.locator(PUBLISHED_DIALOGS + " >> visible=true").count():
                 return True
         except Exception:
             pass

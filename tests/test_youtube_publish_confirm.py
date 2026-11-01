@@ -11,6 +11,9 @@ class _Loc:
         self.page, self.selector = page, selector
         self.first = self
 
+    async def count(self):
+        return 1 if self.page.visible(self.selector) else 0
+
     async def is_visible(self):
         return self.page.visible(self.selector)
 
@@ -30,6 +33,8 @@ class FakePage:
 
     def visible(self, selector):
         if selector == yt.PUBLISHED_DIALOGS:
+            return False  # a hidden copy: only the visible-filtered locator may confirm
+        if selector == yt.PUBLISHED_DIALOGS + " >> visible=true":
             return self.share or (self.prechecks and yt.PRECHECKS_PUBLISH in self.clicked)
         if selector == yt.PRECHECKS_PUBLISH:
             return self.prechecks and yt.PRECHECKS_PUBLISH not in self.clicked
