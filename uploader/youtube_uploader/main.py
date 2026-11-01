@@ -156,6 +156,33 @@ async def _click_if_present(page: Page, selector: str, timeout: int = 4000) -> b
         return False
 
 
+# After Publish, YouTube shows one of these once the video has really gone out.
+PUBLISHED_DIALOGS = "ytcp-video-share-dialog, ytcp-uploads-still-processing-dialog"
+# While its checks are still running, Publish first opens this warning; it needs a second Publish,
+# otherwise the video stays a draft (10-29..11-01: most "published" Shorts were left as drafts).
+PRECHECKS_PUBLISH = (
+    "ytcp-prechecks-warning-dialog #publish-button, "
+    "ytcp-prechecks-warning-dialog #primary-action-button, "
+    "ytcp-prechecks-warning-dialog ytcp-button:has-text('Publish')"
+)
+
+
+async def _confirm_published(page: Page, timeout_ms: int = 90000) -> bool:
+    """Wait for YouTube's published confirmation, answering the precheck warning if it appears."""
+    waited = 0
+    while waited < timeout_ms:
+        try:
+            if await page.locator(PUBLISHED_DIALOGS).first.is_visible():
+                return True
+        except Exception:
+            pass
+        if await _click_if_present(page, PRECHECKS_PUBLISH, 500):
+            youtube_logger.info(_msg("✅", "YouTube 仍在检查内容，已在提示框里再点发布"))
+        await page.wait_for_timeout(1000)
+        waited += 1500
+    return False
+
+
 async def _wait_upload_complete(page: Page, max_polls: int = 360) -> bool:
     """等网页上传从 X% 跑到 100% 再发布。浏览器上传靠窗口开着才传得完，
     若上传到一半就点发布并关闭浏览器，上传会被掐断卡在中途（如 76%）。
@@ -356,8 +383,11 @@ class YouTubeVideo(BaseVideoUploader):
         if not await _click_if_present(page, "#done-button", 15000):
             await browser.close()
             raise RuntimeError("未找到 YouTube 发布按钮（上传可能未完成），未发布")
+        if not await _confirm_published(page):
+            await browser.close()
+            raise RuntimeError("已点 YouTube 发布但没看到发布确认，视频可能停在草稿：未确认，不要重发，请到 YouTube Studio 核对")
         else:
-            await page.wait_for_timeout(4000)
+            await page.wait_for_timeout(1500)
             video_url = ""
             try:
                 link = page.locator("a[href*='youtu.be'], a[href*='watch?v=']").first
