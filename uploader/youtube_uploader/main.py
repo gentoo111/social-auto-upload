@@ -167,6 +167,54 @@ PRECHECKS_PUBLISH = (
 )
 
 
+async def _video_id(page: Page) -> str:
+    """The new video's id from the upload dialog's "Video link" (youtube.com/shorts/<id>)."""
+    try:
+        for href in await page.locator("ytcp-uploads-dialog a[href*='youtu']").evaluate_all(
+                "els => els.map(e => e.href)"):
+            m = re.search(r"(?:shorts/|youtu\.be/|[?&]v=)([\w-]{11})", href or "")
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return ""
+
+
+async def _studio_visibility(page: Page, video_id: str) -> str:
+    """Read the video's visibility from the Studio content list, the page the owner checks.
+
+    11-02..11-08: twelve Shorts went Public while no share dialog was seen, so the dialog alone
+    is not a reliable signal. Returns e.g. "Public", "Draft", or "" when the row is not found."""
+    if not video_id:
+        return ""
+    check = await page.context.new_page()
+    try:
+        m = re.search(r"/channel/([\w-]+)", page.url)
+        if not m:
+            await check.goto("https://studio.youtube.com/", wait_until="domcontentloaded")
+            await check.wait_for_timeout(5000)
+            m = re.search(r"/channel/([\w-]+)", check.url)
+        if not m:
+            return ""
+        for _ in range(4):
+            await check.goto(f"https://studio.youtube.com/channel/{m.group(1)}/videos/short",
+                             wait_until="domcontentloaded")
+            await check.wait_for_timeout(6000)
+            vis = await check.evaluate(
+                """id => { for (const r of document.querySelectorAll('ytcp-video-row')) {
+                     // published rows link /video/<id>/edit; draft rows only carry it in the thumbnail
+                     if (r.innerHTML.includes(id))
+                       return ((r.querySelector('.tablecell-visibility') || {}).innerText || '').trim(); }
+                   return ''; }""", video_id)
+            if vis:
+                return vis.split("\n")[0].strip()
+    except Exception:
+        pass
+    finally:
+        await check.close()
+    return ""
+
+
 async def _confirm_published(page: Page, timeout_ms: int = 90000) -> bool:
     """Wait for YouTube's published confirmation, answering the precheck warning if it appears."""
     waited = 0
@@ -226,6 +274,31 @@ async def _assert_no_verification(page: Page) -> None:
 async def _radio_checked(radio) -> bool:
     return await radio.evaluate(
         "e => e.hasAttribute('checked') || e.getAttribute('aria-checked') === 'true'")
+
+
+NOT_FOR_KIDS = "ytcp-uploads-dialog tp-yt-paper-radio-button[name='VIDEO_MADE_FOR_KIDS_NOT_MFK']"
+
+
+async def _answer_not_for_kids(page: Page) -> None:
+    """Answer the required "made for kids" question and confirm it stuck.
+
+    11-05..11-07: on a slow first upload the answer was lost, Next stayed disabled and seven
+    Shorts were left as drafts behind a "visibility not selected" error."""
+    radio = page.locator(NOT_FOR_KIDS).first
+    for _ in range(3):
+        try:
+            await radio.wait_for(state="attached", timeout=20000)
+            if await _radio_checked(radio):
+                return
+            await radio.scroll_into_view_if_needed(timeout=10000)
+            await radio.click(timeout=10000)
+        except Exception:
+            pass
+        for _ in range(6):
+            if await radio.count() and await _radio_checked(radio):
+                return
+            await page.wait_for_timeout(500)
+    raise RuntimeError("YouTube「不是面向儿童」没能选上，未发布")
 
 
 class YouTubeVideo(BaseVideoUploader):
@@ -340,8 +413,11 @@ class YouTubeVideo(BaseVideoUploader):
                 await page.wait_for_timeout(600)
 
         # 7) 受众：非儿童向（必填）
-        if not await _click_if_present(page, "tp-yt-paper-radio-button[name='VIDEO_MADE_FOR_KIDS_NOT_MFK']", 10000):
-            await _click_if_present(page, "tp-yt-paper-radio-button:has-text('not made for kids'), tp-yt-paper-radio-button:has-text('不是面向儿童')", 6000)
+        try:
+            await _answer_not_for_kids(page)
+        except RuntimeError:
+            await browser.close()
+            raise
 
         # 8) 标签（“显示更多”里）
         if self.tags:
@@ -356,6 +432,13 @@ class YouTubeVideo(BaseVideoUploader):
 
         if self.altered_content:
             await self._declare_altered_content(page)
+
+        # 8.5) 慢的时候表单会重绘，进“可见性”前再核一遍必答项
+        try:
+            await _answer_not_for_kids(page)
+        except RuntimeError:
+            await browser.close()
+            raise
 
         # 9) 连点 Next 到“可见性”步骤
         for _ in range(5):
@@ -380,20 +463,31 @@ class YouTubeVideo(BaseVideoUploader):
         await _wait_upload_complete(page)
 
         await _assert_no_verification(page)
+        video_id = await _video_id(page)
         # 11) 发布
         await page.wait_for_timeout(1200)
         if not await _click_if_present(page, "#done-button", 15000):
             await browser.close()
             raise RuntimeError("未找到 YouTube 发布按钮（上传可能未完成），未发布")
-        if not await _confirm_published(page):
+        confirmed = await _confirm_published(page, 45000)
+        if not confirmed:
+            # 没看到弹窗不代表没发：以 Studio 内容列表里的实际可见性为准
+            actual = await _studio_visibility(page, video_id)
+            youtube_logger.info(_msg("🔎", f"Studio 列表核对 {video_id or '?'}: {actual or '未找到'}"))
+            if actual.lower() == self.visibility.lower():
+                confirmed = True
+            elif actual:
+                await browser.close()
+                raise RuntimeError(f"已点 YouTube 发布，但 Studio 显示为 {actual}（视频 {video_id}）：未确认，不要重发，请到 YouTube Studio 核对")
+        if not confirmed:
             await browser.close()
             raise RuntimeError("已点 YouTube 发布但没看到发布确认，视频可能停在草稿：未确认，不要重发，请到 YouTube Studio 核对")
         else:
             await page.wait_for_timeout(1500)
-            video_url = ""
+            video_url = f"https://youtube.com/shorts/{video_id}" if video_id else ""
             try:
                 link = page.locator("a[href*='youtu.be'], a[href*='watch?v=']").first
-                if await link.count():
+                if not video_url and await link.count():
                     video_url = await link.get_attribute("href") or ""
             except Exception:
                 pass
