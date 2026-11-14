@@ -73,6 +73,29 @@ class StudioPublishTests(unittest.TestCase):
         self.assertNotIn("location_error", result)
         self.assertNotIn("location", plain)
 
+    def test_channels_job_runs_the_tencent_uploader(self):
+        seen = {}
+
+        class FakeTencent:
+            def __init__(self, title, video, tags, date, account_file, **kw):
+                seen.update(title=title, video=video, tags=tags, date=date, account_file=account_file, **kw)
+
+            async def main(self):
+                pass
+
+        module = types.SimpleNamespace(TencentVideo=FakeTencent)
+        with mock.patch.dict(sys.modules, {"uploader.tencent_uploader.main": module}):
+            result = asyncio.run(sp.run(self.job(platform="channels", account="a1", visibility="public")))
+        self.assertEqual(result, {"ok": True, "code": "PUBLISHED", "message": "published", "url": None})
+        self.assertEqual((seen["title"], seen["desc"], seen["date"]), ("T", "D", 0))
+        self.assertEqual(Path(seen["account_file"]).name, "channels_a1.json")
+
+    def test_channels_unconfirmed_and_login_errors_are_classified(self):
+        self.assertEqual(sp.classify(RuntimeError("发布未在预期时间内完成，未确认是否已发表，不要重发；请检查视频号后台")),
+                         "PUBLISH_UNCONFIRMED")
+        self.assertEqual(sp.classify(RuntimeError("视频号 cookie 已失效（被跳转到登录页），请重新扫码登录后再发布")),
+                         "LOGIN_REQUIRED")
+
     def test_x_posts_text_with_optional_images(self):
         seen = {}
 

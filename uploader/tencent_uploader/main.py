@@ -12,7 +12,8 @@ from urllib.parse import urljoin
 
 from patchright.async_api import Page
 from patchright.async_api import Playwright
-from patchright.async_api import async_playwright
+from utils.profile_browser import async_playwright  # fork: per-account Chrome profiles
+from utils import profile_browser
 
 from conf import BASE_DIR, DEBUG_MODE, LOCAL_CHROME_HEADLESS, LOCAL_CHROME_PATH
 from uploader.base_video import BaseVideoUploader
@@ -509,10 +510,13 @@ class TencentBaseUploader(BaseVideoUploader):
         self.local_executable_path = LOCAL_CHROME_PATH
 
     async def validate_base_args(self):
-        if not os.path.exists(self.account_file):
-            raise RuntimeError(f"cookie文件不存在，请先完成视频号登录: {self.account_file}")
-        if not await cookie_auth(self.account_file):
-            raise RuntimeError(f"cookie文件已失效，请先完成视频号登录: {self.account_file}")
+        # fork: a Chrome profile holds the login; open_upload_page reports a lost login itself,
+        # so no extra browser run is spent on a separate cookie check.
+        if not profile_browser.enabled():
+            if not os.path.exists(self.account_file):
+                raise RuntimeError(f"cookie文件不存在，请先完成视频号登录: {self.account_file}")
+            if not await cookie_auth(self.account_file):
+                raise RuntimeError(f"cookie文件已失效，请先完成视频号登录: {self.account_file}")
         if self.publish_strategy not in {TENCENT_PUBLISH_STRATEGY_IMMEDIATE, TENCENT_PUBLISH_STRATEGY_SCHEDULED}:
             raise ValueError(f"不支持的发布策略: {self.publish_strategy}")
 
@@ -934,7 +938,7 @@ class TencentBaseUploader(BaseVideoUploader):
                     tencent_logger.warning(_msg("😵", f"发布仍未完成(第{attempt}次)，异常: {str(exc)[:60]}"))
                 tencent_logger.info(_msg("🏃", "视频正在发布中..."))
                 await asyncio.sleep(1)
-        raise RuntimeError("发布未在预期时间内完成，请检查发布页面")
+        raise RuntimeError("发布未在预期时间内完成，未确认是否已发表，不要重发；请检查视频号后台")
 
 
 class TencentVideo(TencentBaseUploader):

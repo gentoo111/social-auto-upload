@@ -3,7 +3,7 @@
 One job per run, read as JSON from stdin; one JSON result printed as the last stdout line.
 Runs the upstream uploaders in per-account Chrome profiles (``SAU_PROFILE_ROOT`` is required).
 
-    {"action": "publish", "platform": "douyin|tiktok|youtube|instagram|facebook|x", "account": "pets",
+    {"action": "publish", "platform": "douyin|tiktok|youtube|instagram|facebook|x|channels", "account": "pets",
      "video": "/abs/clip.mp4", "title": "...", "description": "...", "tags": ["a"],
      "visibility": "private", "ai": true, "timeout_s": 1800, "page": "Facebook Page name"}
 
@@ -28,7 +28,7 @@ import re
 import sys
 from pathlib import Path
 
-PLATFORMS = ("douyin", "tiktok", "youtube", "instagram", "facebook", "x")
+PLATFORMS = ("douyin", "tiktok", "youtube", "instagram", "facebook", "x", "channels")
 LOGIN_URLS = {
     "douyin": "https://creator.douyin.com/",
     "tiktok": "https://www.tiktok.com/tiktokstudio/upload?lang=en",
@@ -36,6 +36,7 @@ LOGIN_URLS = {
     "instagram": "https://www.instagram.com/",
     "facebook": "https://business.facebook.com/latest/composer/",
     "x": "https://x.com/home",
+    "channels": "https://channels.weixin.qq.com/platform",
 }
 LOGIN_HINT = re.compile(r"登录态失效|cookie|login|Log in|未登录|sign ?in", re.I)
 UNCONFIRMED_HINT = re.compile(r"未确认|不要重发|勿重复|待查询|submission_unknown|已提交")
@@ -106,6 +107,14 @@ async def publish(job: dict) -> dict:
                     reply=job.get("reply") or "")
         await app.main()
         return {"url": app.url, "reply_url": app.reply_url, "reply_error": app.reply_error}
+    if platform == "channels":
+        # 微信视频号 (upstream tencent_uploader): the title is also the short title; the uploader
+        # always marks the video 含AI生成内容, and the web form has no private option.
+        from uploader.tencent_uploader.main import TencentVideo
+
+        app = TencentVideo(job["title"], video, tags, 0, str(file), desc=job.get("description", ""))
+        await app.main()
+        return {"url": None}
     raise ValueError(f"unsupported platform: {platform}")
 
 
