@@ -181,6 +181,8 @@ async def run(job: dict) -> dict:
         if action == "login":
             await login(job)
             return {"ok": True, "code": "LOGGED_IN", "message": "login window closed", "url": None}
+        # Publishing needs no one at the screen: keep its Chrome out of the way (login stays visible).
+        os.environ["SAU_HIDE_WINDOW"] = "1"
         result = await asyncio.wait_for(publish(job), timeout=float(job.get("timeout_s") or 1800))
         out = {"ok": True, "code": "PUBLISHED", "message": "published", "url": result.get("url")}
         if job.get("location"):

@@ -14,6 +14,7 @@ kept.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from pathlib import Path
@@ -27,6 +28,22 @@ _DROPPED_CONTEXT_OPTIONS = {"storage_state", "viewport", "user_agent", "locale",
 
 def enabled() -> bool:
     return bool(os.environ.get("SAU_PROFILE_ROOT"))
+
+
+def hidden() -> bool:
+    """SAU_HIDE_WINDOW=1 (publish runs): the window opens off-screen and minimized, still headed."""
+    return os.environ.get("SAU_HIDE_WINDOW") == "1"
+
+
+async def _minimize(page) -> None:
+    try:
+        session = await page.context.new_cdp_session(page)
+        window = await session.send("Browser.getWindowForTarget")
+        await session.send("Browser.setWindowBounds",
+                           {"windowId": window["windowId"], "bounds": {"windowState": "minimized"}})
+        await session.detach()
+    except Exception:
+        pass  # a visible window only costs the owner a glance; never fail a publish over it
 
 
 def profile_dir(account_file: Any) -> Path:
@@ -55,6 +72,8 @@ class _ProfileBrowser:
         extra = {k: v for k, v in options.items() if k not in _DROPPED_CONTEXT_OPTIONS}
         if self._proxy and "proxy" not in extra:
             extra["proxy"] = self._proxy
+        if hidden():
+            extra["args"] = [*extra.get("args", []), "--window-position=-3000,-3000"]
         context = await self._chromium.launch_persistent_context(
             str(profile_dir(storage_state)),
             channel="chrome",
@@ -65,6 +84,10 @@ class _ProfileBrowser:
             chromium_sandbox=True,
             **extra,
         )
+        if hidden():
+            for page in context.pages:
+                await _minimize(page)
+            context.on("page", lambda page: asyncio.ensure_future(_minimize(page)))
         self._contexts.append(context)
         return context
 
