@@ -661,6 +661,11 @@ class TencentBaseUploader(BaseVideoUploader):
             fi = await find_file_input()
             if fi is None:
                 await asyncio.sleep(1)
+        if fi is None and ("/login.html" in page.url
+                           or any("open.weixin.qq.com/connect/qrconnect" in fr.url for fr in page.frames)):
+            # fork: 登录态在打开发表页后才掉（11-15~11-20 实际 18 次），按登录失效上报，
+            # Studio 才会记为等待登录并在扫码后自动重排，而不是普通失败。
+            raise RuntimeError("视频号 cookie 已失效（被跳转到登录页），请重新扫码登录后再发布")
         if fi is None:
             # 留现场：这个错误的可能原因太多（没登录 / 落到首页 / iframe 没加载完 /
             # 平台改版），只看错误字符串没法区分，截图能一眼看出是哪种。
