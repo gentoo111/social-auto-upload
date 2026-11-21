@@ -114,7 +114,7 @@ class InstagramBrowserRegressionTests(unittest.TestCase):
                     for prompts in (True, False):
                         navigation = ''.join(
                             '<a class="_a6hd" href="#" ' + ('onclick="create()"' if i == 1 else '')
-                            + '><span aria-selected="false">Navigation</span></a>' for i in range(4))
+                            + '><span aria-selected="false">Navigation</span></a>' for i in range(3))
                         await page.set_content(f'<body data-prompts="{str(prompts).lower()}">{navigation}{html}</body>')
                         with tempfile.TemporaryDirectory() as folder:
                             video = Path(folder)/'video.mp4'

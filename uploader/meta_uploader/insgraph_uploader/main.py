@@ -201,31 +201,34 @@ class InstagramUploader:
         notifications = page.get_by_role('dialog').filter(
             has=page.locator('img[src^="/images/instagram/xig/ico/xxhdpi_launcher.png"]'))
         notification_buttons = notifications.locator('._a9-z > button')
-        # 中英文首页均观察到这四个导航弹出入口，依次为通知、创建、设置、Meta。
-        # 先断言完整组和各入口含 aria-selected 图标再取业务顺序第二项，避免全页任意 nth。
+        # Instagram 当前首页会按实验/账户状态显示三个或四个导航弹出入口；创建始终是第二项。
+        # 先断言完整的已知组和各入口含 aria-selected 图标，再取业务顺序第二项，避免全页任意 nth。
         navigation_popups = page.locator('a._a6hd[href="#"]').filter(has=page.locator('[aria-selected]'))
         # 实测通知可能晚于导航出现。动作检查期间处理此已知遮挡，避免先检查缺席、
         # 再点击时才弹出造成竞态；没有提示时不会执行回调，也不添加固定等待。
         await page.add_locator_handler(notifications, lambda: _dismiss_optional_prompt(notifications, notification_buttons.nth(1)))
         try:
-            await expect(navigation_popups).to_have_count(4)
+            await expect(navigation_popups).not_to_have_count(0)
+            navigation_count = await navigation_popups.count()
+            if navigation_count not in (3, 4):
+                raise RuntimeError(f"Instagram 创建导航入口数量不符: {navigation_count}")
             await navigation_popups.nth(1).click()
+            dialog = page.get_by_role('dialog')
+            await expect(dialog).to_have_count(1)
+            file_input = dialog.locator(INSTAGRAM_MEDIA_INPUT)
+            await expect(file_input).to_have_count(1)
+            paths = [self.video_file] if self.video_file else self.image_files
+            await file_input.set_input_files([str(p.resolve()) for p in paths])
+            if self.video_file:
+                # 实际 Reels 介绍使用 reels_nux_icon；动作区“了解更多”位于 span 中，
+                # 确认按钮直接位于 div 中，按局部父子关系区分，不依赖语言与样式散列。
+                reels_intro = page.get_by_role('dialog').filter(
+                    has=page.locator('img[src^="/images/instagram/clips/reels_nux_icon.png"]'))
+                await _dismiss_optional_prompt(reels_intro, reels_intro.locator('._a9-z div > button'))
+            # 裁剪标题栏主动作实际出现，才可推进；上传失败或未知弹窗阻断会保留现场并报错。
+            await expect(dialog.locator(INSTAGRAM_PRIMARY_ACTION)).to_have_count(1, timeout=60_000)
         finally:
             await page.remove_locator_handler(notifications)
-        dialog = page.get_by_role('dialog')
-        await expect(dialog).to_have_count(1)
-        file_input = dialog.locator(INSTAGRAM_MEDIA_INPUT)
-        await expect(file_input).to_have_count(1)
-        paths = [self.video_file] if self.video_file else self.image_files
-        await file_input.set_input_files([str(p.resolve()) for p in paths])
-        if self.video_file:
-            # 实际 Reels 介绍使用 reels_nux_icon；动作区“了解更多”位于 span 中，
-            # 确认按钮直接位于 div 中，按局部父子关系区分，不依赖语言与样式散列。
-            reels_intro = page.get_by_role('dialog').filter(
-                has=page.locator('img[src^="/images/instagram/clips/reels_nux_icon.png"]'))
-            await _dismiss_optional_prompt(reels_intro, reels_intro.locator('._a9-z div > button'))
-        # 裁剪标题栏主动作实际出现，才可推进；上传失败或未知弹窗阻断会保留现场并报错。
-        await expect(dialog.locator(INSTAGRAM_PRIMARY_ACTION)).to_have_count(1, timeout=60_000)
 
     async def _advance_media_editor(self, page: Page) -> None:
         """裁剪、编辑两步各等待标题改变，最终以 Lexical 配文输入框确认。"""
